@@ -1,0 +1,294 @@
+# SparkNest Capstone Project
+## The Brief
+
+SparkNest's operations team has been managing customer enquiries and support cases manually — spreadsheets, WhatsApp, and email. The CTO has approved a Salesforce implementation.
+
+---
+
+## What You Are Building
+
+A working Salesforce org for SparkNest that covers:
+- A clean data model for enquiries and support
+- A secured org where each team member sees only what they should
+- Automated workflows that remove manual steps
+- A simple Apex layer for business logic that Flow cannot handle
+- A working API endpoint that the SparkNest website can call
+- Meaningful reports and dashboards for management
+- One Agentforce agent that handles the most common support request
+
+---
+
+# Day 1 — Data Model, Security & UI
+
+---
+
+### Task 1 — Complete the Data Model
+
+SparkNest's existing Enquiry__c object is missing a few things the business needs before go-live.
+
+**Add these fields to Enquiry__c:**
+
+| Field | Type | Requirement |
+|---|---|---|
+| Status | Picklist | New, In Progress, Closed — default New |
+| Customer Budget | Currency | Min value ₹1,000 via validation rule |
+| Closed Date | Date | Stamped automatically when Status = Closed |
+| Priority | Picklist | High, Medium, Low — default Medium |
+
+**Create a junction object — Enquiry Product Interest:**
+
+A customer can enquire about multiple products in one conversation. Currently one Enquiry links to one Product — that is too restrictive.
+
+Build `Enquiry_Product__c` as a junction object between Enquiry__c and Product2 with:
+•  Lookup to Enquiry__c (required)
+•  Lookup to Product2 (required)
+•  Notes field (Text Area — 500 chars) — any specific question about that product
+•  Quantity Interested (Number) — how many units the customer wants
+ 
+
+---
+
+### Task 2 — Security Setup
+
+SparkNest has two teams — Sales and Support. Set up the org so each team sees exactly what they need.
+
+**Profiles:**
+Clone Standard User twice:
+- SparkNest Sales Rep — CRED on Enquiry__c, no access to Cases
+- SparkNest Support Agent — Read/Edit on Cases, Read on Enquiry__c, no Delete anywhere
+
+**Permission Set:**
+Create one permission set — Senior Sales Rep — that adds Delete on Enquiry__c and Read access to all Case fields. Assign to Arjun Sharma only.
+
+**Role Hierarchy:**
+```
+CEO
+├── Sales Manager
+│   ├── Sales Rep — Hyderabad (Arjun Sharma)
+│   └── Sales Rep — Mumbai
+└── Support Manager
+    ├── Support Agent — Hyderabad (Sneha Nair)
+    └── Support Agent — Mumbai
+```
+
+**OWD:**
+- Enquiry__c → Private
+- Case → Public Read Only
+- Contact → Public Read Only
+
+**Sharing Rule:**
+Care Plan Enquiries (Enquiry Type = Care Plan Enquiry) shared with Support Agent role — Read Only.
+
+**Verify everything works:**
+Log in as Arjun — confirm he sees only his own Enquiries and cannot see Cases. Log in as Sneha — confirm she sees Care Plan Enquiries via the sharing rule but no Product Enquiries.
+
+---
+
+### Task 3 — UI
+
+**Custom Apps:**
+- SparkNest Sales — tabs: Home, Enquiries, Contacts, Products, Reports, Dashboards. Assigned to Sales Rep profile.
+- SparkNest Support — tabs: Home, Cases, Contacts, Enquiries, Reports, Dashboards. Assigned to Support Agent profile.
+
+**Dynamic Forms on Enquiry__c:**
+- Plan Duration visible only when Enquiry Type = Care Plan Enquiry
+- Source visible only when Enquiry Type = Product Enquiry
+- Customer Budget visible only to users with the Senior Sales Rep permission set
+
+**List Views on Enquiry__c:**
+- My Open Enquiries — Owner = Me, Status ≠ Closed
+- Care Plan Enquiries — Enquiry Type = Care Plan Enquiry
+- This Week's Enquiries — Created Date = This Week
+
+**Quick Action on Enquiry__c:**
+Create a Quick Action called Convert to Case — a Screen Flow action (built in Day 2) that converts an Enquiry into a Case.
+
+---
+
+### Task 4 — Data Load
+
+SparkNest has two data files to load before go-live.
+
+**File 1 — Products (via Data Loader):**
+Create a CSV of 8 SparkNest products — 2 per category (Personal Devices, Smart Home, Accessories, Annual Care Plans). Include a SKU field as External Id. Load using Data Loader Insert operation.
+
+**File 2 — Contacts (via Import Wizard):**
+Create a CSV of 10 SparkNest customers across Hyderabad, Mumbai, and Chennai. Load using the Data Import Wizard. After loading, create a Duplicate Rule on Contact that blocks creation if another Contact with the same Email already exists.
+
+---
+
+### Day 1 Checkpoint
+
+Before moving to Day 2, verify:
+- Log in as Arjun — can he create an Enquiry, see his List Views, and see the Dynamic Form behave correctly based on Enquiry Type?
+- Log in as Sneha — can she see Care Plan Enquiries but not Product Enquiries?
+- Are all 8 products and 10 contacts loaded correctly
+
+---
+
+# Day 2 — Automation & Code
+**Target: Business logic is automated, Apex is written and tested, LWC is live**
+
+---
+
+### Task 5 — Flows
+
+**Flow 1 — Screen Flow: Convert Enquiry to Case**
+
+This is the Quick Action from Task 3. When a Sales Rep clicks Convert to Case on an Enquiry:
+
+1. Show a screen displaying the Enquiry Subject and Contact Name
+2. Ask the user to select Priority (High / Medium / Low) and enter a brief description
+3. Create a Case — Subject = Enquiry Subject, Contact = linked Contact, Priority = selected value, Origin = Internal
+4. Assign the Case to the Care Plan Support queue if Enquiry Type = Care Plan, otherwise assign to General Support queue
+5. Update the Enquiry Status to Closed
+6. Show a confirmation screen with the new Case number
+
+**Flow 2 — Record-Triggered Flow: Auto-close Follow-up Task**
+
+When an Enquiry's Status changes to Closed, find all open Tasks linked to that Enquiry and mark them as Completed. Run after the record is saved, only on update, only when Status changes to Closed.
+
+**Flow 3 — Scheduled Flow: Weekly Enquiry Summary**
+
+Runs every Monday at 8am. Queries all Enquiries created in the last 7 days. Creates one Task assigned to the Sales Manager with Subject: "Weekly Summary — [X] new enquiries this week." Use a text formula to build the subject dynamically.
+
+---
+
+### Task 6 — Apex
+
+**6a — Trigger using Handler Pattern**
+
+Build a trigger on Enquiry__c using the handler pattern:
+
+- `EnquiryTrigger` — thin trigger, calls dispatcher
+- `TriggerDispatcher` — routes to correct handler method
+- `EnquiryTriggerHandler` — implements handler interface
+- `EnquiryService` — contains all business logic
+
+Logic to implement in the service class:
+
+**Before Insert:**
+- If Status is blank, default it to New
+- If Customer Budget is less than ₹1,000, add a field error — "Customer budget must be at least ₹1,000"
+
+**After Insert:**
+- Create a follow-up Task due 3 days from today, assigned to the Enquiry owner, Subject = "Follow up: [Enquiry Subject]"
+
+**Before Update:**
+- When Status changes to Closed, stamp today's date into Closed Date
+
+**6b — Test Class using Test Data Factory**
+
+Build a Test Data Factory and a test class for EnquiryService with 75%+ coverage:
+
+**6c — Async Apex: Batch to Close Stale Enquiries**
+
+SparkNest wants all Enquiries that have been In Progress for more than 30 days with no activity to be automatically closed every night.
+Schedule it to run nightly from Developer Console.
+
+### Task 7 — LWC: Enquiry Summary Card
+skip task 7
+
+### Task 8 — API
+
+**8a — Custom REST API: Website Enquiry Submission**
+
+Build the `SparkNestEnquiryAPI` class from the session — the endpoint that the SparkNest website calls when a customer submits an enquiry form. Test all scenarios from Postman:
+- New customer — Contact created + Enquiry created
+- Existing customer — Contact found + Enquiry created
+- Missing email — 400 error returned
+
+**8b — Composite API: B2B Onboarding**
+
+From Postman, build and fire a Composite API request that creates a Contact and a linked Enquiry in one atomic call. Test with `allOrNone: true` — deliberately break the Enquiry creation and confirm the Contact also rolls back.
+
+---
+
+# Day 3 — Reports, Agentforce & Demo
+**Target: Management has visibility, the AI agent works, demo is ready**
+
+---
+
+### Task 9 — Reports & Dashboards
+
+**Reports to build:**
+
+| Report Name | Type | What it shows |
+|---|---|---|
+| Enquiries by Type | Summary | Count of enquiries grouped by Enquiry Type this month |
+| My Open Enquiries | Tabular | All open enquiries owned by running user |
+| Cases by Priority | Summary | Count of open cases grouped by Priority |
+| Weekly New Enquiries | Summary | Enquiries created this week grouped by day |
+
+**Dashboard — SparkNest Sales Overview:**
+- New enquiries this month (metric)
+- Enquiries by type (donut chart)
+- Weekly trend (bar chart)
+- My open enquiries (table)
+
+Set as a Dynamic Dashboard so each Sales Rep sees their own data.
+
+---
+
+### Task 10 — Agentforce
+
+Activate the SparkNest Support Agent built during the session. Add one new Topic:
+
+**Topic: Enquiry Status Check**
+
+Classification Description: Customer is asking about the status of an existing enquiry they submitted.
+
+Test from Agent Builder preview with three scenarios:
+- Customer with an open enquiry
+- Customer with a closed enquiry
+- Customer email not in Salesforce
+
+---
+
+### Task 11 — Git Commit
+
+Before the demo, commit everything to your local Git repository:
+
+---
+
+### Task 12 — Demo Preparation
+
+Prepare a 15-minute walkthrough covering these scenarios in order — each one demonstrates a different part of the build:
+
+**Scene 1 — New Customer Enquiry (2 min)**
+A new customer visits sparknest.in. Show the Custom REST API call from Postman creating the Contact and Enquiry. Open Salesforce and show both records were created. Show the follow-up Task that the Trigger automatically created.
+
+**Scene 2 — Sales Rep Experience (3 min)**
+Log in as Arjun Sharma. Show the SparkNest Sales app, List Views, and Dynamic Form on the Enquiry record. Show the LWC Summary Card. Use the Convert to Case Quick Action to run the Screen Flow and create a Case.
+
+**Scene 3 — Support Agent Experience (2 min)**
+Log in as Sneha Nair. Show she can see the Case created by Arjun. Show she can see Care Plan Enquiries via the Sharing Rule. Show she cannot see Product Enquiries or delete anything.
+
+**Scene 4 — Automation in Action (3 min)**
+Close an Enquiry and show the Closed Date stamped automatically, Tasks marked complete by the Record-Triggered Flow. Show the Scheduled Flow's Task for the Sales Manager.
+
+**Scene 5 — Management Dashboard (2 min)**
+Log in as admin. Show the Sales Overview dashboard. Switch users to Arjun and show the Dynamic Dashboard shows only his data.
+
+**Scene 6 — Agentforce (3 min)**
+Open the Agent Builder preview. Type a customer message asking about their enquiry status. Show the agent finding the Contact, fetching the Enquiry, and responding with the correct status and next steps.
+
+---
+
+## Scoring Rubric
+
+| Area | Points | What is assessed |
+|---|---|---|
+| Data Model | 10 | Junction object, roll-up, Dynamic Forms, field types correct |
+| Security | 10 | OWD, roles, profiles, permission sets, sharing rule all working as expected |
+| UI | 10 | Apps, list views, quick actions, search layout correct |
+| Flows | 10 | All 3 flows working end to end with no errors |
+| Apex | 15 | Trigger pattern, test class coverage 75%+, batch class deployable |
+| LWC | 15 | Component renders, wire works, status update saves correctly |
+| API | 10 | Custom REST handles all 3 scenarios, Composite rolls back correctly |
+| Agentforce | 10 | New topic works for all 3 test scenarios |
+| Reports/Dashboard | 5 | 4 reports built, dynamic dashboard working |
+| Git | 5 | 3 meaningful commits, one per day |
+| **Total** | **120** | |
+
+---
